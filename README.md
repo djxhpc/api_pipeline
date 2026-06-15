@@ -1,5 +1,3 @@
-# api_pipeline
-
 # Vision Pipeline — 安裝與使用說明
 
 四模型整合影像辨識管道（分類 / 尺規 / 水準點 / 座標 OCR），
@@ -136,6 +134,4 @@ print(resp.json())
 |`<output_dir>/<檔名>.json`                |單張影像完整辨識結果（分類、子流程結果、needs_review、reviewed）  |
 |`<output_dir>/hashes_db.json`           |SHA-256 去重資料庫（含 pHash16，若啟用）                |
 |`<output_dir>/suspected_duplicates.json`|疑似重複清單（僅 `PHASH_SUSPECTED_ENABLED=True` 時產生）|
-|`<output_dir>/error_outputs.json`       |viewer.py 標註為 `X` 的影像清單                     |
-
 -----
