@@ -18,6 +18,7 @@
 
 pip install -r requirements.txt
 
+```
 
 將 `vision_pipeline.py` 中 `paths` 裡四個 `.pt` 模型的路徑改成實際路徑：
 
