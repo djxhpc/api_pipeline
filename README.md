@@ -11,10 +11,9 @@
 
 -----
 
-## 1. 安裝
+## 1. 安裝(建議使用獨立環境)
 
 ```bash
-# 建議使用獨立環境
 
 pip install -r requirements.txt
 
