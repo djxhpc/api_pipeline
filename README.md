@@ -5,9 +5,9 @@
 四模型整合影像辨識管道（分類 / 尺規 / 水準點 / 座標 OCR），
 提供：
 
-1. 核心函式庫 `vision_pipeline.py`
-1. FastAPI HTTP 服務 `api.py`
-1. 可視化標註工具 `viewer.py`
+1. 核心函式庫(for api) `vision_pipeline.py`
+2. FastAPI HTTP 服務 `api.py`
+3. 原始程式(監視資料夾-每秒循環)`auto_classify_pipeline0615.py`
 
 -----
 
