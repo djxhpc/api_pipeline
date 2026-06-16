@@ -121,6 +121,16 @@ CLASS_TO_TYPE = {
     "座標":   "coord",
 }
 
+# ── 影像名稱前綴與分類對應表（優先使用，沒有符合則走 classify 模型）──
+# 格式: {"前綴名稱": "分類類型"}
+# 分類類型可選: "ruler" (尺規/埋深)、"benchmark" (水準點)、"coord" (座標)
+# 範例: {"PIP01": "ruler", "PIP02": "benchmark", "PIP03": "coord"}
+IMAGE_PREFIX_CLASS_MAP = {
+    "PIP01": "ruler",
+    "PIP02": "benchmark",
+    # 在此處新增更多前綴對應規則
+}
+
 CLASSIFY_CONF_THRESH = 0.0  # 分類信心低於此值仍照分類結果走（沒有 fallback，已無"其他"類別）
 
 # ── 尺規 (ruler) 判斷參數 ─────────────────────────
@@ -281,6 +291,21 @@ def _get_ocr_engine():
 # =============================================
 # Step A: 影像分類 (classify)
 # =============================================
+
+def _classify_by_prefix(filename):
+    """
+    根據檔案名稱前綴檢查是否有對應的分類。
+    回傳 (class_name, confidence, is_matched) 或 (None, None, False)
+    """
+    basename = os.path.splitext(filename)[0]  # 移除副檔名
+    for prefix, class_type in IMAGE_PREFIX_CLASS_MAP.items():
+        if basename.startswith(prefix):
+            # 根據 class_type 找出對應的中文類別名稱
+            for cls_name, cls_type in CLASS_TO_TYPE.items():
+                if cls_type == class_type:
+                    return cls_name, 1.0, True
+    return None, None, False
+
 
 def classify_image(filepath):
     """
@@ -1040,9 +1065,13 @@ def process_single_image(filepath, output_dir):
             _save_suspected_db(output_dir, suspected_db)
             print(f"  [疑似重複] {filename} ~ {similar_to} (距離={distance})")
 
-    # ── 2. 影像分類（不論是否重複，皆執行）──
+    # ── 2. 影像分類（優先檢查前綴，無符合則執行模型）──
     try:
-        cls_name, cls_conf = classify_image(filepath)
+        cls_name, cls_conf, matched_by_prefix = _classify_by_prefix(filename)
+        if not matched_by_prefix:
+            cls_name, cls_conf = classify_image(filepath)
+        else:
+            print(f"  [前綴匹配] {filename} -> {cls_name}")
     except Exception as e:
         result["class"] = "Error"
         result["class_confidence"] = None
