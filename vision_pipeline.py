@@ -126,9 +126,24 @@ CLASS_TO_TYPE = {
 # 分類類型可選: "ruler" (尺規/埋深)、"benchmark" (水準點)、"coord" (座標)
 # 範例: {"PIP01": "ruler", "PIP02": "benchmark", "PIP03": "coord"}
 IMAGE_PREFIX_CLASS_MAP = {
-    "PIP01": "ruler",
-    "PIP02": "benchmark",
-    # 在此處新增更多前綴對應規則
+    "SD11": "benchmark",
+    "SD12": "benchmark",
+
+    "PIP05": "coord",
+    "PIP20": "coord",
+    "PIP31": "coord",
+    "HOL04": "coord",
+    "POL04": "coord",
+    "OTH03": "coord",
+    "ATTI01": "coord",
+    "SD13": "coord",
+
+    "PIP02": "ruler",
+    "PIP08": "ruler",
+    "PIP11": "ruler",
+    "HOL07": "ruler",
+    "POL02": "ruler",
+    "HOL02": "ruler",
 }
 
 CLASSIFY_CONF_THRESH = 0.0  # 分類信心低於此值仍照分類結果走（沒有 fallback，已無"其他"類別）
