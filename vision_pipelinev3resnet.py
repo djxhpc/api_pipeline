@@ -109,11 +109,11 @@ except Exception as _e:
 # 設定區
 # =============================================
 paths = {
-    "classify": "./models/影像分類bestv2.pt",
-    "ruler":    "./models/尺規bestv3.pt",
-    "coordfmt": "./models/判斷格式分類best2.pt",
-    "bench":    "./models/一等水準點best.pt",
-    "ruler_classify": "./models/尺規管圓孔best.pt",
+    "classify": "D:/嘉義照片辨識/API/models/影像分類bestv2.pt",
+    "ruler":    "D:/嘉義照片辨識/API/models/尺規bestv3.pt",
+    "coordfmt": "D:/嘉義照片辨識/API/models/判斷格式分類best2.pt",
+    "bench":    "D:/嘉義照片辨識/API/models/一等水準點bestv2.pt",
+    "ruler_classify": "D:/嘉義照片辨識/API/models/尺規管圓孔bestv3.pt",  
 }
 
 CLASS_TO_TYPE = {
@@ -509,21 +509,510 @@ def run_benchmark(filepath):
 # =============================================
 # Step B-3: 座標 (coord) — 座標類
 # =============================================
-# ... (為了簡潔，此處隱藏與你原文中相同的 Coord 長篇邏輯，請直接沿用原本的 _COORD_PATTERNS 到 _is_valid_format 等函式) ...
-# 注意：這段你原本的 OCR 解析邏輯沒有任何變更，直接照貼即可。
 
 _NUM = r'(-?\d+\.\d+|-?\d+)'
-# ... (省略中間座標辨識的 Regex 邏輯，保留原樣即可) ...
 
-# 因為字數限制，我跳過 Regex 宣告，請在你的原始碼中保留這部分
-# -------------------------------------------------------------
-# ...
-# -------------------------------------------------------------
+_COORD_PATTERNS = [
+    (r'北座標[:=\s]*'      + _NUM, r'東座標[:=\s]*'      + _NUM, r'高程[:=\s]*'         + _NUM),
+    (r'縱軸[:=\s]*'        + _NUM, r'橫軸[:=\s]*'        + _NUM, r'高程[:=\s]*'         + _NUM),
+    (r'地表.*?[NN][:=\s]*' + _NUM, r'地表.*?[EE][:=\s]*' + _NUM, r'地表.*?[HH][:=\s]*'   + _NUM),
+    (r'本地.*?[NN][:=\s]*' + _NUM, r'本地.*?[EE][:=\s]*' + _NUM, r'本地.*?[HH][:=\s]*'   + _NUM),
+    (r'本地.*?[NN][:=\s]*' + _NUM, r'本地.*?[EE][:=\s]*' + _NUM, r'高程[:=\s]*'         + _NUM),
+    (r'北[:=\s]*'          + _NUM, r'東[:=\s]*'          + _NUM, r'高程?[:=\s]*'        + _NUM),
+    (r'北[:=\s]*'          + _NUM, r'東[:=\s]*'          + _NUM, r'高度[:=\s]*'         + _NUM),
+    (r'[NN][:=\s]*'        + _NUM, r'[EE][:=\s]*'        + _NUM, r'[ZZ][:=\s]*'         + _NUM),
+    (r'[NN][:=\s]*'        + _NUM, r'[EE][:=\s]*'        + _NUM, r'[HH][:=\s]*'         + _NUM),
+]
 
-# （假設 run_coord 函式在此，內容與你原本完全相同）
+_CLASS_PATTERNS = {
+    1: [
+        (r'本地.*?[NN][:=\s]*' + _NUM, r'本地.*?[EE][:=\s]*' + _NUM, r'本地.*?.[HH][:=\s]*' + _NUM),
+        (r'本地.*?[NN][:=\s]*' + _NUM, r'本地.*?[EE][:=\s]*' + _NUM, r'高程[:=\s]*'         + _NUM),
+    ],
+    2: [
+        (r'[NN][:=\s]*' + _NUM, r'[EE][:=\s]*' + _NUM, r'[ZZ][:=\s]*' + _NUM),
+    ],
+    3: [
+        (r'[NN][:=\s]*' + _NUM, r'[EE][:=\s]*' + _NUM, r'高程[:=\s]*' + _NUM),
+        (r'[NN][:=\s]*' + _NUM, r'[EE][:=\s]*' + _NUM, r'[ZZ][:=\s]*' + _NUM),
+        (r'縱軸[:=\s]*' + _NUM, r'橫軸[:=\s]*' + _NUM, r'高程[:=\s]*' + _NUM),
+    ],
+    4: [
+        (r'本地.*?[NN][:=\s]*' + _NUM, r'本地.*?[EE][:=\s]*' + _NUM, r'高程[:=\s]*'         + _NUM),
+        (r'地表.*?[NN][:=\s]*' + _NUM, r'地表.*?[EE][:=\s]*' + _NUM, r'地表.*?[HH][:=\s]*'   + _NUM),
+    ],
+    5: [
+        (r'北[座坐][標标][:=\s]*' + _NUM, r'[東东][座坐][標标][:=\s]*' + _NUM, r'高[座坐][標标][:=\s]*' + _NUM),
+        (r'北[座坐][標标][:=\s]*' + _NUM, r'[東东][座坐][標标][:=\s]*' + _NUM, r'高程[:=\s]*'           + _NUM),
+        (r'北[:=\s]*'             + _NUM, r'東[:=\s]*'                 + _NUM, r'高度[:=\s]*'           + _NUM),
+        (r'北[:=\s]*'             + _NUM, r'東[:=\s]*'                 + _NUM, r'高[:=\s]*'             + _NUM),
+        (r'[Nn][:=\s]*'           + _NUM, r'[Ee][:=\s]*'              + _NUM, r'[Hh][:=\s]+'           + _NUM),
+    ],
+    7: [
+        (r'[EE][:=\s\n]*' + _NUM + r'.*?[NN][:=\s\n]*' + _NUM + r'.*?[ZZ27z][:=\s\n]*' + _NUM),
+        (r'[EE][:=\s\n]*' + _NUM, r'[NN][:=\s\n]*' + _NUM, r'[ZZ27z][:=\s\n]*' + _NUM)
+    ],
+    8: [
+        (r'[NN][:=\s]*' + _NUM, r'[EE][:=\s]*' + _NUM, r'[ZZ][:=\s]*' + _NUM),
+    ],
+}
+
+
+def _ocr_with_paddle(image_path, engine):
+    result, _ = engine(image_path)
+    if not result:
+        return ""
+    return "\n".join(item[1] for item in result if float(item[2]) > 0.3)
+
+
+def _match_coord(text, patterns):
+    best = {"N": "N/A", "E": "N/A", "H_Z": "N/A"}
+    m = re.search(r'NEZ[:=\s]*' + _NUM + r',' + _NUM + r',' + _NUM, text.replace(' ', ''))
+    if m:
+        return {"N": m.group(1), "E": m.group(2), "H_Z": m.group(3)}
+    for np_, ep_, hp_ in patterns:
+        mn = re.search(np_, text, re.IGNORECASE)
+        me = re.search(ep_, text, re.IGNORECASE)
+        mh = re.search(hp_, text, re.IGNORECASE)
+        if mn and me and mh:
+            return {"N": mn.group(1), "E": me.group(1), "H_Z": mh.group(1)}
+        if mn and best["N"]   == "N/A": best["N"]   = mn.group(1)
+        if me and best["E"]   == "N/A": best["E"]   = me.group(1)
+        if mh and best["H_Z"] == "N/A": best["H_Z"] = mh.group(1)
+    return best
+
+
+def _strip_dms(text):
+    dms_pattern = re.compile(
+        r'\d{1,3}\s*[°\*oO]\s*\d{1,2}\s*[\'′]\s*\d{1,2}(?:\.\d+)?[""′\']?\s*[NSEWnsew]?',
+        re.IGNORECASE
+    )
+    return dms_pattern.sub('', text)
+
+
+def _validate_twd97(res):
+    def _id(v): return len(v.split('.')[0].lstrip('-'))
+    if not (
+        res["N"]   != "N/A" and _id(res["N"])   == 7 and
+        res["E"]   != "N/A" and _id(res["E"])   == 6 and
+        res["H_Z"] != "N/A" and '.' in res["H_Z"]
+    ):
+        return False
+    try:
+        n_val = int(res["N"].split('.')[0])
+        e_val = int(res["E"].split('.')[0])
+        return 2_400_000 <= n_val <= 2_800_000 and 147_000 <= e_val <= 350_000
+    except (ValueError, AttributeError):
+        return False
+
+
+def _digit_fallback_twd97(text):
+    def _is_valid_h(v):
+        if '.' not in v:
+            return False
+        ip = v.split('.')[0].lstrip('-')
+        return ip != '0' and 1 <= len(ip) <= 4
+
+    all_m = list(re.finditer(r'-?\d+(?:\.\d+)?', text))
+    cn = ce = ch = None
+    n_idx = e_idx = -1
+
+    for i, m in enumerate(all_m):
+        v_str = m.group()
+        clean_v = v_str.split('.')[0].lstrip('-')
+        if len(clean_v) == 7 and cn is None:
+            val = int(clean_v)
+            if 2000000 <= val <= 3000000:
+                cn = v_str
+                n_idx = i
+                break
+
+    if cn:
+        e_candidates = []
+        for i, m in enumerate(all_m):
+            if i > n_idx:
+                val_str = m.group().split('.')[0].lstrip('-')
+                if len(val_str) == 6:
+                    val = int(val_str)
+                    if 100000 <= val <= 400000:
+                        e_candidates.append((i, m.group()))
+
+        for e_i, e_v in e_candidates:
+            if e_i + 1 < len(all_m) and _is_valid_h(all_m[e_i + 1].group()):
+                ce = e_v
+                e_idx = e_i
+                ch = all_m[e_i + 1].group()
+                break
+
+        if not ce and e_candidates:
+            ce = e_candidates[0][1]
+            e_idx = e_candidates[0][0]
+
+    if ce and not ch:
+        for i, m in enumerate(all_m):
+            if i <= e_idx:
+                continue
+            v = m.group()
+            if _is_valid_h(v):
+                ch = v
+                break
+
+    return {
+        "N":   cn if cn else "N/A",
+        "E":   ce if ce else "N/A",
+        "H_Z": ch if ch else "N/A",
+    }
+
+
+def _extract_coord_bottom_left(image_path, engine, crop_ratio=0.45):
+    try:
+        with Image.open(image_path) as img:
+            img = ImageOps.exif_transpose(img).convert('RGB')
+            w, h = img.size
+            y_start = int(h * (1 - crop_ratio))
+            x_end = min(int(w * (crop_ratio * 1.25)), w)
+            crop = img.crop((0, y_start, x_end, h))
+        text = _ocr_with_paddle(np.array(crop), engine)
+    except Exception:
+        text = ""
+
+    bottom_left_patterns = [
+        (r'N[:=\s\n]*' + _NUM, r'E[:=\s\n]*' + _NUM, r'H[:=\s\n]*' + _NUM),
+        (r'[NN][:=\s]*' + _NUM, r'[EE][:=\s]*' + _NUM, r'[HH][:=\s]*' + _NUM)
+    ]
+    res = _match_coord(text, bottom_left_patterns)
+
+    if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        valid_nums = []
+        for line in lines:
+            m_num = re.search(_NUM, line)
+            if m_num:
+                valid_nums.append(m_num.group(1))
+        if len(valid_nums) >= 3:
+            v0, v1, v2 = valid_nums[0], valid_nums[1], valid_nums[2]
+            def _id(v): return len(v.split('.')[0].lstrip('-'))
+            if _id(v0) == 7 and _id(v1) == 6 and '.' in v2:
+                res["N"], res["E"], res["H_Z"] = v0, v1, v2
+
+    if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
+        full_text = _ocr_with_paddle(image_path, engine)
+        res = _match_coord(full_text, _COORD_PATTERNS)
+        if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
+            res = _match_coord(full_text, bottom_left_patterns)
+
+    return res
+
+
+def _extract_coord_local_neh(image_path, engine):
+    text = _ocr_with_paddle(image_path, engine)
+
+    n_match = re.search(r'本地.*?[NN][:=\s]*' + _NUM, text, re.IGNORECASE)
+    e_match = re.search(r'本地.*?[EE][:=\s]*' + _NUM, text, re.IGNORECASE)
+
+    res = {"N": "N/A", "E": "N/A", "H_Z": "N/A"}
+    if n_match:
+        res["N"] = n_match.group(1)
+    if e_match:
+        res["E"] = e_match.group(1)
+        text_after_e = text[e_match.end():]
+        h_match = re.search(r'[HH]\s+' + _NUM, text_after_e, re.IGNORECASE)
+        if not h_match:
+            h_match = re.search(r'^\s*' + _NUM, text_after_e, re.MULTILINE)
+        if h_match:
+            res["H_Z"] = h_match.group(1)
+
+    if res["H_Z"] == "N/A":
+        h2 = re.search(r'高程[:=\s]*' + _NUM, text, re.IGNORECASE)
+        if h2:
+            res["H_Z"] = h2.group(1)
+
+    if not _validate_twd97(res):
+        fb = _digit_fallback_twd97(text)
+        if fb["N"] != "N/A": res["N"]   = fb["N"]
+        if fb["E"] != "N/A": res["E"]   = fb["E"]
+        if fb["H_Z"] != "N/A": res["H_Z"] = fb["H_Z"]
+
+    return res, text
+
+
 def run_coord(filepath):
-    # ...(你的原本 run_coord 內容)
-    pass
+    """
+    座標 OCR（單張版）。
+    Step A: coordfmt 模型分類格式 (1-9)
+    Step B: 依格式套用對應 regex / 特殊邏輯解析 N/E/H_Z
+    Step C: 嚴格格式檢查 -> needs_review
+    """
+    engine = _get_ocr_engine()
+    coord_yolo = _get_model("coordfmt")
+
+    # ── Step A: 格式分類 ──
+    class_id = 9
+    try:
+        pred = coord_yolo(filepath, device=DEVICE, verbose=False)[0]
+        conf = float(pred.probs.top1conf)
+        cls_name = pred.names[pred.probs.top1]
+        if conf >= COORD_YOLO_CONF:
+            class_id = COORD_YOLO_CLASS_MAP.get(cls_name, 9)
+    except Exception:
+        class_id = 9
+
+    # ── Step B: 依格式解析 ──
+    if class_id == 6:
+        res = _extract_coord_bottom_left(filepath, engine)
+    elif class_id == 1:
+        res, full_text_c1 = _extract_coord_local_neh(filepath, engine)
+        if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
+            res = _match_coord(full_text_c1, _COORD_PATTERNS)
+    else:
+        text = _ocr_with_paddle(filepath, engine)
+        text = unicodedata.normalize('NFKC', text)
+        text = _strip_dms(text)
+
+        if class_id == 2:
+            nez_c2 = re.search(
+                r'NEZ\s*[:\s]\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)',
+                text, re.IGNORECASE
+            )
+            res = None
+            if nez_c2:
+                cands = [nez_c2.group(1), nez_c2.group(2), nez_c2.group(3)]
+                c2_n = c2_e = c2_z = None
+                for c in cands:
+                    il = len(c.split('.')[0].lstrip('-'))
+                    if il == 7 and c2_n is None: c2_n = c
+                    elif il == 6 and c2_e is None: c2_e = c
+                    elif 1 <= il <= 4 and c2_z is None: c2_z = c
+                if c2_n and c2_e and c2_z:
+                    res = {"N": c2_n, "E": c2_e, "H_Z": c2_z}
+
+            if res is None:
+                cleaned_text = text.replace(" ", "")
+                pattern_nez_strict = (
+                    r'[NN](?::|=)?' + _NUM +
+                    r'[EE](?::|=)?' + _NUM +
+                    r'[ZZ27z](?::|=)?' + _NUM
+                )
+                m_strict = re.search(pattern_nez_strict, cleaned_text, re.IGNORECASE)
+                if m_strict:
+                    res = {"N": m_strict.group(1), "E": m_strict.group(2), "H_Z": m_strict.group(3)}
+                else:
+                    n_m = re.search(r'(?:^|\n)\s*[NN]\s*[\n:=]\s*' + _NUM, text, re.IGNORECASE)
+                    e_m = re.search(r'(?:^|\n)\s*[EE]\s*[\n:=]\s*' + _NUM, text, re.IGNORECASE)
+                    z_m = re.search(r'(?:^|\n)\s*[ZZ27z]\s*[\n:=]\s*' + _NUM, text, re.IGNORECASE)
+                    res = {
+                        "N":   n_m.group(1) if n_m else "N/A",
+                        "E":   e_m.group(1) if e_m else "N/A",
+                        "H_Z": z_m.group(1) if z_m else "N/A",
+                    }
+
+            if not _validate_twd97(res):
+                fb = _digit_fallback_twd97(text)
+                if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
+                    res = fb
+
+        elif class_id == 3:
+            res = _match_coord(text, _CLASS_PATTERNS[3])
+            if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
+                res = _match_coord(text, _COORD_PATTERNS)
+            if not _validate_twd97(res):
+                fb = _digit_fallback_twd97(text)
+                if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
+                    res = fb
+
+        elif class_id == 7:
+            c7_bottom_text = ""
+            try:
+                with Image.open(filepath) as c7_img:
+                    c7_img = ImageOps.exif_transpose(c7_img).convert('RGB')
+                    c7_w, c7_h = c7_img.size
+                    c7_crop = c7_img.crop((0, int(c7_h * 0.78), c7_w, c7_h))
+                c7_bottom_text = _ocr_with_paddle(np.array(c7_crop), engine)
+            except Exception:
+                pass
+
+            c7_text = c7_bottom_text if re.search(r'NEZ', c7_bottom_text, re.IGNORECASE) else text
+            res = {"N": "N/A", "E": "N/A", "H_Z": "N/A"}
+
+            nez_comma_match = re.search(
+                r'NEZ\s*[:\s]\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)',
+                c7_text, re.IGNORECASE
+            )
+            if nez_comma_match:
+                raw_e, raw_n, raw_z = nez_comma_match.group(1), nez_comma_match.group(2), nez_comma_match.group(3)
+                candidates = [raw_e, raw_n, raw_z]
+                coord_n, coord_e, coord_z = None, None, None
+                for c in candidates:
+                    int_len = len(c.split('.')[0].lstrip('-'))
+                    if int_len == 7 and coord_n is None:
+                        coord_n = c
+                    elif int_len == 6 and coord_e is None:
+                        coord_e = c
+                    elif 1 <= int_len <= 4 and coord_z is None:
+                        coord_z = c
+                if coord_n and coord_e and coord_z:
+                    res["N"], res["E"], res["H_Z"] = coord_n, coord_e, coord_z
+                else:
+                    nez_comma_match = None
+
+            if res["N"] == "N/A" or res["E"] == "N/A" or res["H_Z"] == "N/A":
+                num_matches = list(re.finditer(r'-?\d+(?:\.\d+)?', c7_text))
+                coord_n, coord_e, coord_z = None, None, None
+
+                for m in num_matches:
+                    val_str = m.group()
+                    int_digits = len(val_str.split('.')[0].lstrip('-'))
+                    if int_digits == 6 and coord_e is None:
+                        coord_e = val_str
+                    elif int_digits == 7 and coord_n is None:
+                        coord_n = val_str
+
+                if coord_n and coord_e:
+                    res["N"], res["E"] = coord_n, coord_e
+                    lines = [line.strip() for line in c7_text.split('\n') if line.strip()]
+
+                    z_label_pattern = re.compile(
+                        r'(?:高程|正高|\b[Zz]\s*[:：=\s]|EL\s*[:：=\s])', re.IGNORECASE
+                    )
+                    sigma_keywords = re.compile(
+                        r'\b(?:sigma|pdop|hdop|vdop|rdop|dop)\b|(?:^|\s)[oO]\s*[:：]', re.IGNORECASE
+                    )
+
+                    z_found = False
+                    for line in lines:
+                        if z_found:
+                            break
+                        if sigma_keywords.search(line):
+                            continue
+                        if z_label_pattern.search(line):
+                            for num in re.findall(r'-?\d+(?:\.\d+)?', line):
+                                if num in (coord_n, coord_e):
+                                    continue
+                                z_int_len = len(num.split('.')[0].lstrip('-'))
+                                if 1 <= z_int_len <= 4:
+                                    coord_z = num
+                                    z_found = True
+                                    break
+
+                    if not z_found:
+                        target_line_indices = set()
+                        for li, line in enumerate(lines):
+                            if coord_n in line or coord_e in line:
+                                target_line_indices.add(li)
+
+                        search_order = []
+                        for li in sorted(target_line_indices):
+                            search_order.append(li)
+                            if li + 1 < len(lines): search_order.append(li + 1)
+                            if li + 2 < len(lines): search_order.append(li + 2)
+                            if li - 1 >= 0: search_order.append(li - 1)
+
+                        seen_idx = set()
+                        final_order = [i for i in search_order if not (i in seen_idx or seen_idx.add(i))]
+                        candidate_lines = [(lines[i], i) for i in final_order if i < len(lines)]
+
+                        for context_line, _line_num in candidate_lines:
+                            if z_found:
+                                break
+                            if sigma_keywords.search(context_line):
+                                continue
+                            if any(k in context_line.lower() for k in ['天線', '天线', 'ant', '北', '東', '东']):
+                                context_line = re.sub(
+                                    r'.*?(?:天線|天线|ant|antenna)[^0-9]*?\d+(?:\.\d+)?', '',
+                                    context_line, flags=re.IGNORECASE
+                                )
+                            for num in re.findall(r'-?\d+(?:\.\d+)?', context_line):
+                                if num in (coord_n, coord_e):
+                                    continue
+                                try:
+                                    z_val = float(num)
+                                except ValueError:
+                                    continue
+                                if abs(z_val) < 1:
+                                    continue
+                                z_int_len = len(num.split('.')[0].lstrip('-'))
+                                if 1 <= z_int_len <= 4:
+                                    coord_z = num
+                                    z_found = True
+                                    break
+
+                    if coord_z and len(coord_z.split('.')[0]) == 1:
+                        z_idx = c7_text.find(coord_z)
+                        if z_idx > 0 and c7_text[z_idx - 1].isdigit():
+                            coord_z = c7_text[z_idx - 1] + coord_z
+
+                    if coord_z:
+                        res["H_Z"] = coord_z
+
+            if any(v == "N/A" for v in [res["N"], res["E"]]):
+                res = _match_coord(c7_text, _COORD_PATTERNS)
+
+        elif class_id in _CLASS_PATTERNS:
+            res = _match_coord(text, _CLASS_PATTERNS[class_id])
+            if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
+                res = _match_coord(text, _COORD_PATTERNS)
+
+            if class_id == 5 and not _validate_twd97(res):
+                fb = _digit_fallback_twd97(text)
+                if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
+                    res = fb
+
+            if class_id == 4 and not _validate_twd97(res):
+                standalone_re = re.compile(r'^\s*(-?\d+(?:\.\d+)?)\s*m?\s*$')
+                nums_in_order = []
+                for line in text.split('\n'):
+                    m = standalone_re.match(line)
+                    if m:
+                        nums_in_order.append(m.group(1))
+                coord_n, coord_e, coord_z = None, None, None
+                for v in nums_in_order:
+                    int_digits = len(v.split('.')[0].lstrip('-'))
+                    if int_digits == 7 and coord_n is None:
+                        coord_n = v
+                    elif int_digits == 6 and coord_n is not None and coord_e is None:
+                        coord_e = v
+                    elif coord_e is not None and coord_z is None and '.' in v:
+                        coord_z = v
+                if coord_n and coord_e and coord_z:
+                    res = {"N": coord_n, "E": coord_e, "H_Z": coord_z}
+                if not _validate_twd97(res):
+                    fb = _digit_fallback_twd97(text)
+                    if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
+                        res = fb
+
+            if class_id not in [4, 5] and not _validate_twd97(res):
+                fb = _digit_fallback_twd97(text)
+                if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
+                    res = fb
+        else:
+            res = _match_coord(text, _COORD_PATTERNS)
+            if not _validate_twd97(res):
+                fb = _digit_fallback_twd97(text)
+                if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
+                    res = fb
+
+    # ── Step C: 嚴格格式檢查 ──
+    def _is_valid_format(r):
+        def check_value(val, expected_digits):
+            try:
+                if val == "N/A":
+                    return False
+                str_val = str(val)
+                if '.' not in str_val:
+                    return False
+                int_part = str_val.split('.')[0].lstrip('-')
+                return len(int_part) == expected_digits
+            except Exception:
+                return False
+
+        n_valid = check_value(r["N"], 7)
+        e_valid = check_value(r["E"], 6)
+        z_valid = (r["H_Z"] != "N/A" and '.' in str(r["H_Z"]))
+        return n_valid and e_valid and z_valid
+
+    res["needs_review"] = "正常" if _is_valid_format(res) else "請重新拍攝"
+    res["coord_class"] = class_id
+    return res
 
 
 # =============================================
