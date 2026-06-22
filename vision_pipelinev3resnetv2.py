@@ -554,6 +554,8 @@ _CLASS_PATTERNS = {
         (r'北[座坐][標标][:=\s]*' + _NUM, r'[東东][座坐][標标][:=\s]*' + _NUM, r'高程[:=\s]*'           + _NUM),
         (r'北[:=\s]*'             + _NUM, r'東[:=\s]*'                 + _NUM, r'高度[:=\s]*'           + _NUM),
         (r'北[:=\s]*'             + _NUM, r'東[:=\s]*'                 + _NUM, r'高[:=\s]*'             + _NUM),
+        # 前面是北/東(N/E)時，高程優先抓「高/高程/高度」，避免誤選同圖中的 H
+        (r'[Nn][:=\s]*'           + _NUM, r'[Ee][:=\s]*'              + _NUM, r'高[程度]?[:=\s]*'      + _NUM),
         (r'[Nn][:=\s]*'           + _NUM, r'[Ee][:=\s]*'              + _NUM, r'[Hh][:=\s]+'           + _NUM),
     ],
     7: [
@@ -571,6 +573,155 @@ def _ocr_with_paddle(image_path, engine):
     if not result:
         return ""
     return "\n".join(item[1] for item in result if float(item[2]) > 0.3)
+
+
+def _ocr_boxes(filepath, engine):
+    """
+    回傳含框幾何的 OCR 結果：[{cx, cy, xl, xr, h, text, conf}, ...]。
+    供「同列標籤→數值」配對使用；讀檔/OCR 失敗回傳 []。
+    """
+    try:
+        img_bgr = _read_image_bgr(filepath)
+        raw, _ = engine(img_bgr)
+    except Exception:
+        return []
+    items = []
+    for box, text, conf in (raw or []):
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+        items.append({
+            "cx": sum(xs) / len(xs), "cy": sum(ys) / len(ys),
+            "xl": min(xs), "xr": max(xs), "h": max(ys) - min(ys),
+            "text": text, "conf": float(conf),
+        })
+    return items
+
+
+def _extract_coord_row_paired(filepath, engine):
+    """
+    以 OCR 框的幾何位置做「同列、標籤→右側數值」配對。
+    專治座標/GNSS 畫面中數值與標籤被切成不同框、且數值框 y 略高於標籤，
+    導致用文字順序會整體位移一格的問題。
+    高程優先抓「高/高程/高度」（中文），自然避開 H（HRMS/VRMS）。
+    回傳 {"N","E","H_Z"}，抓不到的欄位為 "N/A"。
+    """
+    res = {"N": "N/A", "E": "N/A", "H_Z": "N/A"}
+    items = _ocr_boxes(filepath, engine)
+    if not items:
+        return res
+
+    def num_in_row(label):
+        """找與 label 同列、在其右側、y 最接近的數字框。"""
+        ly = label["cy"]
+        lh = label["h"] or 20
+        best, best_dy = None, None
+        for it in items:
+            if it is label:
+                continue
+            if it["xl"] < label["cx"]:          # 必須在標籤右側
+                continue
+            dy = abs(it["cy"] - ly)
+            if dy > lh * 1.5:                    # 不同列
+                continue
+            m = re.search(r'-?\d+\.\d+|-?\d+', it["text"])
+            if not m:
+                continue
+            if best is None or dy < best_dy:
+                best, best_dy = m.group(), dy
+        return best
+
+    # 僅匹配「乾淨的完整標籤」，避免抓到 北平移量/束平移量/高程平移量/
+    # 基站相位中心高/天綜高度/杆高/大地高 等干擾欄位；抓不到就交給後續 fallback。
+    # 高程優先「高程/高度/正高」(排除大地高)，自然避開 H(HRMS/VRMS)。
+    n_re = re.compile(r'北([座坐][標标])?')
+    e_re = re.compile(r'[東东]([座坐][標标])?')
+    h_re = re.compile(r'(正)?高(程|度|[座坐][標标])?')
+
+    def _clean(t):
+        return re.sub(r'^[\s:：]+|[\s:：]+$', '', t)
+
+    n_label = e_label = h_label = None
+    for it in items:
+        t = _clean(it["text"])
+        if n_label is None and n_re.fullmatch(t):
+            n_label = it
+        if e_label is None and e_re.fullmatch(t):
+            e_label = it
+        if h_label is None and h_re.fullmatch(t):
+            h_label = it
+
+    if n_label is not None:
+        v = num_in_row(n_label)
+        if v:
+            res["N"] = v
+    if e_label is not None:
+        v = num_in_row(e_label)
+        if v:
+            res["E"] = v
+    if h_label is not None:
+        v = num_in_row(h_label)
+        if v:
+            res["H_Z"] = v
+
+    return res
+
+
+def _extract_coord_nez_column(filepath, engine):
+    """
+    class_id=8(NEZ 編輯座標畫面)常 OCR 不到 N/E/Z 單字標籤，但數值排成一欄。
+    依垂直順序取 N(7 位,2-3M)、E(6 位,N 後)、Z(E 後第一個純小數，允許 0.xxx)，
+    排除 B/L 經緯度(含 ° ' " 或數字後接 NSEW)。回傳抓不到為 "N/A"。
+    """
+    res = {"N": "N/A", "E": "N/A", "H_Z": "N/A"}
+    items = _ocr_boxes(filepath, engine)
+    if not items:
+        return res
+
+    def plain_num(t):
+        t = t.strip()
+        if re.search(r"[°'\"′″]", t):            # DMS 符號 -> 經緯度
+            return None
+        if re.search(r'\d\s*[NSEWnsew]$', t):    # 數字後接方位 -> 經緯度
+            return None
+        m = re.fullmatch(r'-?\d+\.\d+|-?\d+', t)
+        return m.group() if m else None
+
+    nums = [v for it in sorted(items, key=lambda i: i["cy"])
+            if (v := plain_num(it["text"])) is not None]
+
+    n_i = e_i = None
+    for i, v in enumerate(nums):
+        ip = v.split('.')[0].lstrip('-')
+        if len(ip) == 7:
+            try:
+                if 2_000_000 <= int(ip) <= 3_000_000:
+                    res["N"], n_i = v, i
+                    break
+            except ValueError:
+                pass
+
+    if n_i is not None:
+        for i in range(n_i + 1, len(nums)):
+            ip = nums[i].split('.')[0].lstrip('-')
+            if len(ip) == 6:
+                try:
+                    if 100_000 <= int(ip) <= 400_000:
+                        res["E"], e_i = nums[i], i
+                        break
+                except ValueError:
+                    pass
+
+    if e_i is not None:
+        for i in range(e_i + 1, len(nums)):
+            v = nums[i]
+            if '.' not in v:
+                continue
+            ip = v.split('.')[0].lstrip('-')
+            if 1 <= len(ip) <= 4:                # 允許 0.xxx
+                res["H_Z"] = v
+                break
+
+    return res
 
 
 def _match_coord(text, patterns):
@@ -670,6 +821,58 @@ def _digit_fallback_twd97(text):
         "E":   ce if ce else "N/A",
         "H_Z": ch if ch else "N/A",
     }
+
+
+def _ocr_enhanced(filepath, engine, scale=2.0):
+    """
+    對比強化 + 放大後重新 OCR。
+    針對「灰色 / 低對比 / 小字」造成 OCR 漏字的情況（class_id 3/5/8 常見），
+    以 CLAHE 增強灰階對比再放大，協助讀出原本抓不到的數值。
+    回傳 OCR 文字（無法處理時回傳空字串）。
+    """
+    try:
+        img_bgr = _read_image_bgr(filepath)
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+        if scale and scale != 1.0:
+            enhanced_bgr = cv2.resize(
+                enhanced_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
+            )
+        result, _ = engine(enhanced_bgr)
+    except Exception:
+        return ""
+    if not result:
+        return ""
+    return "\n".join(item[1] for item in result if float(item[2]) > 0.3)
+
+
+def _fill_missing_with_enhanced(res, filepath, engine, patterns):
+    """
+    若 res 仍有 N/A 欄位，對影像做對比強化(CLAHE+放大)後重新 OCR，
+    僅用來「補足」缺漏欄位，不覆蓋已抓到的值
+    （避免清晰但非 TWD97 的合法值，例如 8 位數座標，被誤洗掉）。
+    coord_class 由模型判定、可能在 4/8 等類別間飄移，故此補強不綁定特定類別。
+    """
+    if not any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
+        return res
+
+    g_text = _ocr_enhanced(filepath, engine)
+    if not g_text:
+        return res
+    g_text = unicodedata.normalize('NFKC', g_text)
+    g_text = _strip_dms(g_text)
+
+    g_res = _match_coord(g_text, patterns)
+    gfb = _digit_fallback_twd97(g_text)
+    for k in ("N", "E", "H_Z"):
+        if res[k] == "N/A":
+            if g_res[k] != "N/A":
+                res[k] = g_res[k]
+            elif gfb[k] != "N/A":
+                res[k] = gfb[k]
+    return res
 
 
 def _extract_coord_bottom_left(image_path, engine, crop_ratio=0.45):
@@ -955,17 +1158,48 @@ def run_coord(filepath):
             if any(v == "N/A" for v in [res["N"], res["E"]]):
                 res = _match_coord(c7_text, _COORD_PATTERNS)
 
-    
+        elif class_id == 5:
+            # 基底：原本的文字/數字 fallback（digit_fallback 會覆寫掉 N2329 這類無效值）
+            res = _match_coord(text, _CLASS_PATTERNS[5])
+            if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
+                res = _match_coord(text, _COORD_PATTERNS)
+            if not _validate_twd97(res):
+                fb = _digit_fallback_twd97(text)
+                if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
+                    res = fb
+
+            # 同列幾何配對(北→N、東→E、高程/高度→H_Z)優先覆蓋：
+            # 解決數值框 y 略高於標籤、用文字順序會整體位移一格的問題；
+            # 並保留清晰但非 TWD97 的合法值(如 8 位數座標)；高程優先「高程/高度/正高」，
+            # 不被同圖 H(HRMS/VRMS)/大地高/相位中心高/杆高 搶走。
+            row_res = _extract_coord_row_paired(filepath, engine)
+            for k in ("N", "E", "H_Z"):
+                if row_res[k] != "N/A":
+                    res[k] = row_res[k]
+
+        elif class_id == 8:
+            # 基底：NEZ 文字 pattern + digit fallback
+            res = _match_coord(text, _CLASS_PATTERNS[8])
+            if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
+                res = _match_coord(text, _COORD_PATTERNS)
+            if not _validate_twd97(res):
+                fb = _digit_fallback_twd97(text)
+                if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
+                    res = fb
+
+            # 幾何欄位配對：N/E/Z 同一欄，Z 取 E 下方第一個純小數(允許 0.xxx)，
+            # 排除 B/L 經緯度；修正 Z 被經度(L)搶走或因前導 0 漏抓的問題。
+            col = _extract_coord_nez_column(filepath, engine)
+            if col["H_Z"] != "N/A":
+                res["H_Z"] = col["H_Z"]
+            for k in ("N", "E"):
+                if res[k] == "N/A" and col[k] != "N/A":
+                    res[k] = col[k]
 
         elif class_id in _CLASS_PATTERNS:
             res = _match_coord(text, _CLASS_PATTERNS[class_id])
             if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
                 res = _match_coord(text, _COORD_PATTERNS)
-
-            if class_id == 5 and not _validate_twd97(res):
-                fb = _digit_fallback_twd97(text)
-                if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
-                    res = fb
 
             if class_id == 4 and not _validate_twd97(res):
                 standalone_re = re.compile(r'^\s*(-?\d+(?:\.\d+)?)\s*m?\s*$')
@@ -1000,6 +1234,12 @@ def run_coord(filepath):
                 fb = _digit_fallback_twd97(text)
                 if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
                     res = fb
+
+    # ── Step B+: 灰字/低對比/小字補強（不綁定 class_id）──
+    # coord_class 由 coordfmt 模型判定，同張圖可能在 4/8 等類別間飄移；
+    # 故在進入嚴格檢查前，對「不完整或不合格」的結果統一做一次對比強化重抓。
+    if class_id not in (6,):  # bottom_left 已有自己的多段裁切流程，不重複
+        res = _fill_missing_with_enhanced(res, filepath, engine, _COORD_PATTERNS)
 
     # ── Step C: 嚴格格式檢查 ──
     def _is_valid_format(r):
