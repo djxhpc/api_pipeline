@@ -747,9 +747,6 @@ def _match_coord(text, patterns):
         if mn and best["N"]   == "N/A": best["N"]   = mn.group(1)
         if me and best["E"]   == "N/A": best["E"]   = me.group(1)
         if mh and best["H_Z"] == "N/A": best["H_Z"] = mh.group(1)
-    print("=== OCR TEXT ===")
-    print(repr(text))          # repr() 會顯示隱藏字元和編碼
-    print("================")
     return best
 
 
@@ -759,6 +756,102 @@ def _strip_dms(text):
         re.IGNORECASE
     )
     return dms_pattern.sub('', text)
+
+
+def _strip_precision(text):
+    """
+    移除 RTK 定位精度資訊(RTK Fixed H:/V:/RMS)與水平精度，避免精度小數(如 H:0.025m)
+    被誤抓為高程。這些值永遠不是 N/E/高程，移除對任何座標格式都安全。
+    """
+    text = re.sub(r'RTK[\s.:_]*Fixed[^\n]*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bRMS\s*[:：]?\s*\d+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'水平精度\s*[:：]?\s*-?\d+(?:\.\d+)?\s*m?', '', text)
+    # 保險：殘留的 H:/V: 接「0.xxx」(精度恆為次公尺級)，不影響合法的 H:26.654
+    text = re.sub(r'\b[HV]\s*[:：]\s*0\.\d+\s*m?', '', text, flags=re.IGNORECASE)
+    return text
+
+
+def _find_height_geom(filepath, engine, n_val, e_val):
+    """
+    以幾何位置找『高程/正高』標籤對應的高程值(允許 0.xxx)，避免 digit_fallback 因前導 0
+    漏抓 0.274 而誤取天線/精度。優先同列右側，其次標籤正下方(同欄)。
+    僅接受合理高程(整數≤4 位且不等於 N/E)，故不會配到 6 位數的橫軸值。
+    只認「高程/正高」，不配天線/大地高/水平精度。找不到回 None。
+    注意：影像旋轉時幾何不可靠，呼叫端應避免使用。
+    """
+    items = _ocr_boxes(filepath, engine)
+    if not items:
+        return None
+    labels = [it for it in items if re.search(r'高\s*程|正\s*高', it["text"])]
+    if not labels:
+        return None
+    lbl = labels[0]
+    lh = lbl["h"] or 25
+
+    def height_num(it):
+        m = re.search(r'-?\d+\.\d+|-?\d+', it["text"])
+        if not m:
+            return None
+        v = m.group()
+        if len(v.split('.')[0].lstrip('-')) > 4:   # 座標級(>4 位) -> 非高程
+            return None
+        if v in (n_val, e_val):
+            return None
+        return v
+
+    # 1) 同列右側
+    same_row = []
+    for it in items:
+        if it is lbl:
+            continue
+        v = height_num(it)
+        if v and abs(it["cy"] - lbl["cy"]) <= lh * 0.8 and it["xl"] >= lbl["cx"]:
+            same_row.append((abs(it["cy"] - lbl["cy"]), it["xl"], v))
+    if same_row:
+        same_row.sort()
+        return same_row[0][2]
+
+    # 2) 標籤正下方(同欄，xl 接近)
+    below = []
+    for it in items:
+        if it is lbl:
+            continue
+        v = height_num(it)
+        if v and 0 < it["cy"] - lbl["cy"] <= lh * 2.2 and abs(it["xl"] - lbl["xl"]) <= lh * 2:
+            below.append((it["cy"] - lbl["cy"], v))
+    if below:
+        below.sort()
+        return below[0][1]
+
+    return None
+
+
+def _retry_rotations(filepath, engine):
+    """
+    影像被旋轉時 OCR 會錯亂。對 90/270/180 度重新 OCR，
+    回傳第一個通過 TWD97 嚴格檢查的 N/E/H_Z 結果；都失敗回傳 None。
+    """
+    try:
+        base = ImageOps.exif_transpose(Image.open(filepath)).convert('RGB')
+    except Exception:
+        return None
+    for deg in (90, 270, 180):
+        try:
+            arr = cv2.cvtColor(np.array(base.rotate(deg, expand=True)), cv2.COLOR_RGB2BGR)
+            raw, _ = engine(arr)
+            text = "\n".join(it[1] for it in (raw or []) if float(it[2]) > 0.3)
+            text = unicodedata.normalize('NFKC', text)
+            text = _strip_dms(_strip_precision(text))
+            r = _match_coord(text, _COORD_PATTERNS)
+            if not _validate_twd97(r):
+                fb = _digit_fallback_twd97(text)
+                if _validate_twd97(fb):
+                    r = fb
+            if _validate_twd97(r):
+                return r
+        except Exception:
+            continue
+    return None
 
 
 def _validate_twd97(res):
@@ -784,6 +877,10 @@ def _digit_fallback_twd97(text):
         ip = v.split('.')[0].lstrip('-')
         return ip != '0' and 1 <= len(ip) <= 4
 
+    def _dec_ok(v):
+        # 小數位 > 5 視為兩個值被 OCR 黏在一起(如 2596899.621165503)，排除
+        return '.' not in v or len(v.split('.')[1]) <= 5
+
     all_m = list(re.finditer(r'-?\d+(?:\.\d+)?', text))
     cn = ce = ch = None
     n_idx = e_idx = -1
@@ -791,7 +888,7 @@ def _digit_fallback_twd97(text):
     for i, m in enumerate(all_m):
         v_str = m.group()
         clean_v = v_str.split('.')[0].lstrip('-')
-        if len(clean_v) == 7 and cn is None:
+        if len(clean_v) == 7 and cn is None and _dec_ok(v_str):
             val = int(clean_v)
             if 2000000 <= val <= 3000000:
                 cn = v_str
@@ -803,7 +900,7 @@ def _digit_fallback_twd97(text):
         for i, m in enumerate(all_m):
             if i > n_idx:
                 val_str = m.group().split('.')[0].lstrip('-')
-                if len(val_str) == 6:
+                if len(val_str) == 6 and _dec_ok(m.group()):
                     val = int(val_str)
                     if 100000 <= val <= 400000:
                         e_candidates.append((i, m.group()))
@@ -874,7 +971,7 @@ def _fill_missing_with_enhanced(res, filepath, engine, patterns):
     if not g_text:
         return res
     g_text = unicodedata.normalize('NFKC', g_text)
-    g_text = _strip_dms(g_text)
+    g_text = _strip_dms(_strip_precision(g_text))
 
     g_res = _match_coord(g_text, patterns)
     gfb = _digit_fallback_twd97(g_text)
@@ -990,7 +1087,7 @@ def run_coord(filepath):
     else:
         text = _ocr_with_paddle(filepath, engine)
         text = unicodedata.normalize('NFKC', text)
-        text = _strip_dms(text)
+        text = _strip_dms(_strip_precision(text))
 
         if class_id == 2:
             nez_c2 = re.search(
@@ -1035,14 +1132,36 @@ def run_coord(filepath):
                     res = fb
 
         elif class_id == 3:
+            # 1) 乾淨標籤優先（N/E/高程、縱軸/橫軸/高程、N/E/Z）。
+            #    不再 merge _COORD_PATTERNS：其 best-fill 會把座標值誤塞進 H_Z 並被鎖住。
             res = _match_coord(text, _CLASS_PATTERNS[3])
-            if any(v == "N/A" for v in [res["N"], res["E"], res["H_Z"]]):
-                res2 = _match_coord(text, _COORD_PATTERNS)       # ★ 改：先存 res2
-                res = _merge_coord(res, res2)                    # ★ 改：合併而非覆蓋
+            # 清掉位數不符的誤值(E 非 6 位、N 非 7 位、H_Z 為座標級>4 位)，
+            # 以免被後續 merge 鎖住而蓋不掉(如 E=0.006、H_Z=193391.638)。
+            for _k, _n in (("N", 7), ("E", 6)):
+                if res[_k] != "N/A" and len(res[_k].split('.')[0].lstrip('-')) != _n:
+                    res[_k] = "N/A"
+            if res["H_Z"] != "N/A" and len(res["H_Z"].split('.')[0].lstrip('-')) > 4:
+                res["H_Z"] = "N/A"
+            # 2) digit_fallback 尊重位數：完整合格就整組取代，否則只補缺
             if not _validate_twd97(res):
                 fb = _digit_fallback_twd97(text)
-                if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
-                    res = _merge_coord(res, fb)                  # ★ 改：合併而非覆蓋
+                if _validate_twd97(fb):
+                    res = fb
+                else:
+                    res = _merge_coord(res, fb)
+            # 3) 影像被旋轉時(高程讀不到或被 RTK H:0.025 卡住)：轉正重抓，完整合格就整組取代
+            used_rotation = False
+            if not _validate_twd97(res):
+                rot = _retry_rotations(filepath, engine)
+                if rot:
+                    res = rot
+                    used_rotation = True
+            # 4) 未旋轉時，用「高程」標籤的幾何位置覆蓋 H_Z：避免 digit_fallback 因前導 0
+            #    漏掉 0.274 而誤抓天線(1.600)。旋轉影像的幾何不可靠，故跳過。
+            if not used_rotation:
+                h_geom = _find_height_geom(filepath, engine, res["N"], res["E"])
+                if h_geom is not None:
+                    res["H_Z"] = h_geom
 
         elif class_id == 7:
             c7_bottom_text = ""
