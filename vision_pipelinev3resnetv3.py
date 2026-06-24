@@ -602,10 +602,7 @@ def _ocr_boxes(filepath, engine):
 def _extract_coord_row_paired(filepath, engine):
     """
     以 OCR 框的幾何位置做「同列、標籤→右側數值」配對。
-    專治座標/GNSS 畫面中數值與標籤被切成不同框、且數值框 y 略高於標籤，
-    導致用文字順序會整體位移一格的問題。
-    高程優先抓「高/高程/高度」（中文），自然避開 H（HRMS/VRMS）。
-    回傳 {"N","E","H_Z"}，抓不到的欄位為 "N/A"。
+    修正：在 Grid 佈局中，優先抓取水平距離(dx)最近的數值，避免抓到右側其他欄位的數值。
     """
     res = {"N": "N/A", "E": "N/A", "H_Z": "N/A"}
     items = _ocr_boxes(filepath, engine)
@@ -613,28 +610,42 @@ def _extract_coord_row_paired(filepath, engine):
         return res
 
     def num_in_row(label):
-        """找與 label 同列、在其右側、y 最接近的數字框。"""
+        """找與 label 同列、在其右側、且水平距離(dx)最近的數字框。"""
         ly = label["cy"]
         lh = label["h"] or 20
-        best, best_dy = None, None
+        lx = label["cx"]
+        
+        best, best_dx = None, None
+        
         for it in items:
             if it is label:
                 continue
-            if it["xl"] < label["cx"]:          # 必須在標籤右側
+            
+            # 1. 必須在標籤右側 (xl > lx)
+            if it["xl"] < lx:
                 continue
+                
+            # 2. 必須在同一行 (y 座標差距在合理範圍內)
             dy = abs(it["cy"] - ly)
-            if dy > lh * 1.5:                    # 不同列
+            if dy > lh * 1.0: # 縮小 y 容差，避免跨行
                 continue
+            
+            # 3. 必須包含數字
             m = re.search(r'-?\d+\.\d+|-?\d+', it["text"])
             if not m:
                 continue
-            if best is None or dy < best_dy:
-                best, best_dy = m.group(), dy
+            
+            # 4. 計算水平距離 (dx)
+            # 使用 it["xl"] (框左邊緣) 減去 label["cx"] (標籤中心)
+            dx = it["xl"] - lx
+            
+            # 優先選擇水平距離最近的 (dx 最小)
+            if best is None or dx < best_dx:
+                best, best_dx = m.group(), dx
+                
         return best
 
-    # 僅匹配「乾淨的完整標籤」，避免抓到 北平移量/束平移量/高程平移量/
-    # 基站相位中心高/天綜高度/杆高/大地高 等干擾欄位；抓不到就交給後續 fallback。
-    # 高程優先「高程/高度/正高」(排除大地高)，自然避開 H(HRMS/VRMS)。
+    # 匹配標籤的 Regex
     n_re = re.compile(r'北([座坐][標标])?')
     e_re = re.compile(r'[東东]([座坐][標标])?')
     h_re = re.compile(r'(正)?高(程|度|[座坐][標标])?')
@@ -654,16 +665,13 @@ def _extract_coord_row_paired(filepath, engine):
 
     if n_label is not None:
         v = num_in_row(n_label)
-        if v:
-            res["N"] = v
+        if v: res["N"] = v
     if e_label is not None:
         v = num_in_row(e_label)
-        if v:
-            res["E"] = v
+        if v: res["E"] = v
     if h_label is not None:
         v = num_in_row(h_label)
-        if v:
-            res["H_Z"] = v
+        if v: res["H_Z"] = v
 
     return res
 
@@ -722,6 +730,35 @@ def _extract_coord_nez_column(filepath, engine):
             if 1 <= len(ip) <= 4:                # 允許 0.xxx
                 res["H_Z"] = v
                 break
+
+    return res
+
+def _extract_coord_label_colon(text):
+    """
+    從文字中抓取 N: / E: / h: 後面緊跟的數值。
+    適用於 OCR 結果中出現 'N: 2741234.567' 'E: 301234.567' 'h: 123.456' 格式。
+    回傳 {"N","E","H_Z"}，抓不到的欄位為 "N/A"。
+    """
+    res = {"N": "N/A", "E": "N/A", "H_Z": "N/A"}
+
+    # N: 後的數值（大寫 N，排除 NE 連寫等干擾）
+    m_n = re.search(r'(?<![A-Za-z])N\s*[:：]\s*(-?\d+\.?\d*)', text)
+    if m_n:
+        res["N"] = m_n.group(1)
+
+    # E: 後的數值
+    m_e = re.search(r'(?<![A-Za-z])E\s*[:：]\s*(-?\d+\.?\d*)', text)
+    if m_e:
+        res["E"] = m_e.group(1)
+
+    # h: 後的數值（小寫 h，區分大寫 H 可能代表 HRMS 等）
+    # 同時支援大寫 H: 但排除 HRMS / HSTD 等
+    m_h = re.search(r'(?<![A-Za-z])h\s*[:：]\s*(-?\d+\.?\d*)', text)
+    if not m_h:
+        # fallback: 大寫 H: 但後面不能緊跟 R/S/D/P 等（排除 HRMS, HSTD, HDOP）
+        m_h = re.search(r'(?<![A-Za-z])H\s*[:：]\s*(-?\d+\.?\d*)(?!\s*[A-Za-z])', text)
+    if m_h:
+        res["H_Z"] = m_h.group(1)
 
     return res
 
@@ -1299,7 +1336,19 @@ def run_coord(filepath):
                 fb = _digit_fallback_twd97(text)
                 if fb["N"] != "N/A" or fb["E"] != "N/A" or fb["H_Z"] != "N/A":
                     res = fb
+            # ── 新增：抓 N: / E: / h: 標籤冒號後的數值 ──
+            # 移除原本的 any(N/A) 判斷，改為無條件呼叫，以便執行「N/E 同時存在時優先覆蓋 H_Z」
+            colon_res = _extract_coord_label_colon(text)
 
+            # 優先邏輯：若 N: 與 E: 同時被冒號格式抓到，代表此為同一組結構化輸出，
+            # 此時 h: 的數值可信度極高，直接優先覆蓋 H_Z（即使前面已抓到值）
+            if colon_res["N"] != "N/A" and colon_res["E"] != "N/A" and colon_res["H_Z"] != "N/A":
+                res["H_Z"] = colon_res["H_Z"]
+
+            # 補位邏輯：其餘欄位維持「僅填補 N/A」原則，不破壞已成功解析的結果
+            for k in ("N", "E", "H_Z"):
+                if res[k] == "N/A" and colon_res[k] != "N/A":
+                    res[k] = colon_res[k]
             # 同列幾何配對(北→N、東→E、高程/高度→H_Z)優先覆蓋：
             # 解決數值框 y 略高於標籤、用文字順序會整體位移一格的問題；
             # 並保留清晰但非 TWD97 的合法值(如 8 位數座標)；高程優先「高程/高度/正高」，
