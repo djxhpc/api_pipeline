@@ -117,7 +117,7 @@ except Exception as _e:
 # }
 paths = {
     "classify": "./models/影像分類bestv2.pt",
-    "ruler":    "./models/尺規分割bestv2.pt",
+    "ruler":    "./models/尺規分割bestv3.pt",
     "coordfmt": "./models/判斷格式分類best2.pt",
     "bench":    "./models/一等水準點bestv2.pt",
     "ruler_classify": "./models/尺規管圓孔bestv3.pt",  # <== 新增這個模型
@@ -145,6 +145,10 @@ CLASSIFY_CONF_THRESH = 0.0
 # =============================================
 SAVE_MASK_VIS = True          # True = 儲存 mask 視覺化圖, False = 關閉
 MASK_VIS_DIR = r"C:\Users\WF_114.WFUSION\Desktop\pin\Chiayi\mix_test3\mask_vis_output"  # 視覺化圖輸出目錄
+# 新增：mask 交叉判斷的嚴格度控制
+MIN_MASK_OVERLAP_PIXELS = 25     # 至少要有 80 個像素重疊才算真正交叉
+MIN_MASK_IOU = 0.003             # 或者 IoU 至少要超過這個值（兩者擇一即可）
+
 
 HORIZONTAL_CONF_THRESHOLD = 0.4
 VERTICAL_CONF_THRESHOLD   = 0.6
@@ -354,21 +358,24 @@ def classify_image(filepath):
 
 def _masks_intersect(mask_a, mask_b):
     """
-    判斷兩個 boolean mask 是否有像素交集，並計算 Mask IoU。
-    mask_a, mask_b: numpy bool array (同尺寸)
+    使用 mask 像素判斷是否有實質交叉
+    調整後的版本：對真正交叉的案例更寬容
     """
     intersection = np.count_nonzero(mask_a & mask_b)
+    
     if intersection == 0:
         return False, 0.0
+
     union = np.count_nonzero(mask_a | mask_b)
     iou = intersection / max(union, 1)
-    return True, float(iou)
+
+    # 放寬條件：像素數或 IoU 達到其中一個門檻即可
+    is_crossed = (intersection >= MIN_MASK_OVERLAP_PIXELS) or (iou >= MIN_MASK_IOU)
+    
+    return is_crossed, float(iou)
 
 
 def _classify_crossing(vertical_masks, horizontal_masks):
-    """
-    用 mask 像素是否有重疊來判斷 cross。
-    """
     if not vertical_masks:
         return "None Detected", False, 0.0
     if not horizontal_masks:
