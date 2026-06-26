@@ -146,8 +146,8 @@ CLASSIFY_CONF_THRESH = 0.0
 SAVE_MASK_VIS = True          # True = 儲存 mask 視覺化圖, False = 關閉
 MASK_VIS_DIR = r"C:\Users\WF_114.WFUSION\Desktop\pin\Chiayi\mix_test3\mask_vis_output"  # 視覺化圖輸出目錄
 # 新增：mask 交叉判斷的嚴格度控制
-MIN_MASK_OVERLAP_PIXELS = 25     # 至少要有 80 個像素重疊才算真正交叉
-MIN_MASK_IOU = 0.003             # 或者 IoU 至少要超過這個值（兩者擇一即可）
+MIN_MASK_OVERLAP_PIXELS = 50     # 至少要有 50 個像素重疊
+MIN_MASK_OVERLAP_RATIO = 0.01   # 交集佔較小 mask 面積的比例門檻（細長物體用這個比 IoU 更準）
 
 
 HORIZONTAL_CONF_THRESHOLD = 0.4
@@ -358,20 +358,26 @@ def classify_image(filepath):
 
 def _masks_intersect(mask_a, mask_b):
     """
-    使用 mask 像素判斷是否有實質交叉
-    調整後的版本：對真正交叉的案例更寬容
+    使用 mask 像素判斷是否有實質交叉。
+    細長物體（尺規、管線）交叉時 IoU 天生很低，改用
+    overlap_ratio = intersection / min(area_a, area_b) 做主要判斷。
     """
     intersection = np.count_nonzero(mask_a & mask_b)
-    
+
     if intersection == 0:
         return False, 0.0
+
+    area_a = np.count_nonzero(mask_a)
+    area_b = np.count_nonzero(mask_b)
+    min_area = max(min(area_a, area_b), 1)
+    overlap_ratio = intersection / min_area
 
     union = np.count_nonzero(mask_a | mask_b)
     iou = intersection / max(union, 1)
 
-    # 放寬條件：像素數或 IoU 達到其中一個門檻即可
-    is_crossed = (intersection >= MIN_MASK_OVERLAP_PIXELS) or (iou >= MIN_MASK_IOU)
-    
+    # 像素數和 overlap_ratio 兩個條件都要符合
+    is_crossed = (intersection >= MIN_MASK_OVERLAP_PIXELS) and (overlap_ratio >= MIN_MASK_OVERLAP_RATIO)
+
     return is_crossed, float(iou)
 
 
