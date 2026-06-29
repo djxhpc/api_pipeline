@@ -117,7 +117,7 @@ except Exception as _e:
 # }
 paths = {
     "classify": "./models/影像分類bestv2.pt",
-    "ruler":    "./models/尺規分割bestv3.pt",
+    "ruler":    "./models/尺規分割bestv4.pt",
     "coordfmt": "./models/判斷格式分類best2.pt",
     "bench":    "./models/一等水準點bestv2.pt",
     "ruler_classify": "./models/尺規管圓孔bestv3.pt",  # <== 新增這個模型
